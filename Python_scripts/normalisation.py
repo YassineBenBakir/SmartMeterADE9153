@@ -1,8 +1,7 @@
 #Ce script souscrit au topic MQTT spécifié et attend les messages.
 #Lorsqu'un message est reçu, il est converti de JSON en un dictionnaire Python.
-#Les valeurs sont extraites, normalisées, puis ajoutées à un DataFrame pandas.
+#Les valeurs sont extraites, normalisées, filtrées, puis ajoutées à un DataFrame pandas.
 #Le DataFrame est mis à jour à chaque réception de message.
-
 
 import paho.mqtt.client as mqtt
 import json
@@ -13,7 +12,8 @@ import pandas as pd
 MQTT_BROKER = "adresse_du_broker_mqtt"
 MQTT_PORT = 1883
 MQTT_TOPIC = "montopic"
-# Fonctions de normalisation
+
+# Fonctions de normalisation et de filtrage
 def standardize(data):
     mean = np.mean(data)
     std = np.std(data)
@@ -24,10 +24,16 @@ def min_max_scale(data):
     max_val = np.max(data)
     return (data - min_val) / (max_val - min_val)
 
-# DataFrame pour stocker les données normalisées
+def low_pass_filter(data, window_size=3):
+    return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
+    #le choix de la taille de la fenêtre (window_size) doit être adapté en fonction de la fréquence d'échantillonnage des données et des caractéristiques des appareils qu'on souhaite detecter
+def median_filter(data, window_size=3):
+    return pd.Series(data).rolling(window=window_size, center=True).median().fillna(method='bfill').fillna(method='ffill')
+
+# DataFrame pour stocker les données traitées
 dataframe = pd.DataFrame()
 
-# Fonction de connexion
+# Callbacks pour la gestion MQTT
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
         print("Connecté au broker MQTT")
@@ -35,7 +41,6 @@ def on_connect(client, userdata, flags, rc):
     else:
         print("Échec de la connexion, code :", rc)
 
-# Fonction de déconnexion
 def on_disconnect(client, userdata, rc):
     print("Déconnecté du broker MQTT, code :", rc)
     client.loop_stop()
@@ -46,18 +51,20 @@ def on_message(client, userdata, msg):
     payload = str(msg.payload.decode("utf-8"))
     data = json.loads(payload)
     
-    # Création d'un DataFrame temporaire pour les données normalisées
-    temp_df = pd.DataFrame({
-        'tension': standardize(np.array(data["tension"])),
-        'courant': standardize(np.array(data["courant"])),
-        'puissance_active': min_max_scale(np.array(data["puissance_active"])),
-        'puissance_apparente': min_max_scale(np.array(data["puissance_apparente"])),
-       #'power_factor': np.array(data["power_factor"]), 
-        'frequence': np.array(data["frequence"]),
-        'energie': min_max_scale(np.array(data["energie"]))
-    })
-    
-    # Ajout des données normalisées au DataFrame principal
+    # Filtrer les données
+    filtered_data = {
+        'tension': low_pass_filter(np.array(data["tension"])),
+        'courant': low_pass_filter(np.array(data["courant"])),
+        'puissance_active': median_filter(np.array(data["puissance_active"])),
+        'puissance_apparente': median_filter(np.array(data["puissance_apparente"])),
+        'frequence': low_pass_filter(np.array(data["frequence"])),
+    }
+
+    # Normaliser les données filtrées
+    normalized_data = {key: min_max_scale(value) for key, value in filtered_data.items()}
+
+    # Ajouter les données normalisées au DataFrame
+    temp_df = pd.DataFrame(normalized_data)
     dataframe = dataframe.append(temp_df, ignore_index=True)
 
 # Initialisation du client MQTT
@@ -79,11 +86,9 @@ client.loop_start()
 # Boucle principale pour garder le script en cours d'exécution
 try:
     while True:
-        # Ici, vous pouvez ajouter d'autres logiques si nécessaire
         pass
 except KeyboardInterrupt:
     print("Arrêt du script...")
     client.loop_stop()
     client.disconnect()
-# Le script continue de tourner indéfiniment
-#`client.loop_stop()` pour arrêter la boucle et `dataframe.to_csv("data.csv")` pour sauvegarder les données.
+    dataframe.to_csv("data.csv")
