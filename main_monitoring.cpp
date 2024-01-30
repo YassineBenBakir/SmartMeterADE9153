@@ -52,18 +52,6 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org");
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-void reconnectWiFi() {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Connexion WiFi perdue. Tentative de reconnexion...");
-    WiFi.begin(ssid, password);
-    while (WiFi.status() != WL_CONNECTED) {
-      delay(500);
-      Serial.print(".");
-    }
-    Serial.println("\nWiFi reconnecté");
-  }
-}
-
 void setup() {
   Serial.begin(115200);
   pinMode(CS, OUTPUT);     
@@ -225,6 +213,18 @@ void readandwrite() {
     facteurs_puissance.clear();
     frequences.clear();
     energies.clear();
+  }
+}
+
+void reconnectWiFi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Connexion WiFi perdue. Tentative de reconnexion...");
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+    }
+    Serial.println("\nWiFi reconnecté");
   }
 }
 
