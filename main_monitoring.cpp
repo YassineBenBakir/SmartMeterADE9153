@@ -8,7 +8,6 @@
 #include "ADE9153A.h"
 #include "ADE9153AAPI.h"
 
-#define ARM_MATH_CM0PLUS
 #define SPI_SPEED 1000000  // SPI Speed
 #define CS 15
 #define USER_INPUT 5          //On-board User Input Button Pin
