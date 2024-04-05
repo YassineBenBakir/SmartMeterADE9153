@@ -1,12 +1,10 @@
-#include <vector>
-#include <WiFi.h>
-#include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <NTPClient.h>
-#include <WiFiUdp.h>
 #include <SPI.h>
 #include "ADE9153A.h"
 #include "ADE9153AAPI.h"
+#include <LoRaWan.h>
+#include <CayenneLPP.h>
 
 #define SPI_SPEED 1000000  // SPI Speed
 #define CS 15
@@ -23,9 +21,6 @@ struct PQRegs pqVals;
 struct AcalRegs acalVals;
 struct Temperature tempVal;
 
-// Vecteurs pour stocker les lectures
-std::vector<float> tensions, courants, puissances_actives, puissances_apparentes, facteurs_puissance, frequences, energies;
-const int nombreLecturesAvantEnvoi = 10;  // Nombre de lectures avant envoi Par exemple, 10 lectures
 
 void readandwrite(void);
 void resetADE9153A(void);
@@ -36,21 +31,13 @@ const long blinkInterval = 500;
 int inputState = LOW;
 int ledState = LOW;
 
-// Paramètres WiFi
-const char *ssid = "";  // Nom du WiFi
-const char *password = "";  // Mot de passe WiFi
-// Paramètres MQTT
-const char *mqtt_broker = "broker.mqttdashboard.com";
-const char *topic = "montopic";
-const char *mqtt_username = "";
-const char *mqtt_password = "";
-const int mqtt_port = 1883;
+unsigned char data[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 0xA};
+char buffer[256];
 
-char buffer[200];
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org");
-WiFiClient espClient;
-PubSubClient client(espClient);
+CayenneLPP lpp(51); // Initialise CayenneLPP avec une taille de buffer de 51 octets
+
+
+
 
 void setup() {
   Serial.begin(115200);
@@ -60,6 +47,36 @@ void setup() {
   pinMode(ADE9153A_RESET_PIN, OUTPUT);
   digitalWrite(ADE9153A_RESET_PIN, HIGH);  
   Serial.begin(115200);
+      while (!SerialUSB);
+
+    lora.init();
+
+    memset(buffer, 0, 256);
+    lora.getVersion(buffer, 256, 1);
+    SerialUSB.print(buffer);
+
+    memset(buffer, 0, 256);
+    lora.getId(buffer, 256, 1);
+    SerialUSB.print(buffer);
+
+    lora.setKey(0, 0, "2C2E0EC80603B6134C1B5658337BDD4A");
+
+    lora.setDeciveMode(LWOTAA);
+    lora.setDataRate(DR0, EU868);
+
+    lora.setChannel(0, 868.1);
+    lora.setChannel(1, 868.3);
+    lora.setChannel(2, 868.5);
+
+    lora.setReceiceWindowFirst(0, 868.1);
+    lora.setReceiceWindowSecond(869.5, DR3);
+
+    lora.setDutyCycle(false);
+    lora.setJoinDutyCycle(false);
+
+    lora.setPower(14);
+
+    while (!lora.setOTAAJoin(JOIN));
   resetADE9153A();            //Reset ADE9153A for clean startup
   delay(1000);
   // Initialize the ADE9153A chip and SPI communication and check whether the device has been properly connected. 
@@ -76,30 +93,10 @@ void setup() {
   ade9153A.SPI_Write_32(REG_AIGAIN, -268435456); //AIGAIN to -1 to account for IAP-IAN swap
   delay(500); 
 
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.println("Connecting to WiFi..");
-  }
-  Serial.println("Connected to the WiFi network");
-  // Set offset time in seconds to adjust for your timezone, for example:
-  // GMT +1 = 3600
-  // GMT +8 = 28800
-  // GMT -1 = -3600
-  // GMT 0 = 0
-  timeClient.begin();
-  timeClient.setTimeOffset(3600);
-  client.setServer(mqtt_broker, mqtt_port);
-  client.setCallback(callback);
-  mqttReconnect();
-  client.subscribe(topic);
 }
 
 void loop() {
-  reconnectWiFi();
-  if (!client.connected()) {
-    mqttReconnect();
-  }
+  lpp.reset();
   client.loop();
   /* Returns metrology to the serial monitor and waits for USER_INPUT button press to run autocal */
 
@@ -137,7 +134,27 @@ void loop() {
     
     Serial.println("Autocalibration Complete");
     delay(2000);
+    short length;
+    short rssi;
+
+    memset(buffer, 0, 256);
+    length = lora.receivePacket(buffer, 256, &rssi);
+
+      if (length) {
+          SerialUSB.print("Length is: ");
+          SerialUSB.println(length);
+          SerialUSB.print("RSSI is: ");
+          SerialUSB.println(rssi);
+          SerialUSB.print("Data is: ");
+          for (unsigned char i = 0; i < length; i++) {
+              SerialUSB.print("0x");
+              SerialUSB.print(buffer[i], HEX);
+              SerialUSB.print(" ");
+          }
+          SerialUSB.println();
+      }
   }
+
 }
 
 void readandwrite() {
@@ -148,111 +165,39 @@ void readandwrite() {
   ade9153A.ReadTemperature(&tempVal);
   
   Serial.print("RMS Current:\t");        
-  Serial.print(rmsVals.CurrentRMSValue/1000); 
+  lpp.addCurrent(4, rmsVals.CurrentRMSValue/1000); 
   Serial.println(" A");
   
   Serial.print("RMS Voltage:\t");        
-  Serial.print(rmsVals.VoltageRMSValue/1000);
+  lpp.addVoltage(3, rmsVals.VoltageRMSValue/100);
   Serial.println(" V");
   
   Serial.print("Active Power:\t");        
-  Serial.print(powerVals.ActivePowerValue/1000);
+  lpp.addAnalogInput(5,powerVals.ActivePowerValue);
   Serial.println(" W");
   
   Serial.print("Reactive Power:\t");        
-  Serial.print(powerVals.FundReactivePowerValue/1000);
+  lpp.addAnalogInput(6,powerVals.FundReactivePowerValue);
   Serial.println(" VAR");
   
   Serial.print("Apparent Power:\t");        
-  Serial.print(powerVals.ApparentPowerValue/1000);
+  lpp.addAnalogInput(7,powerVals.ActivePowerValue);
   Serial.println(" VA");
   
   Serial.print("Power Factor:\t");        
-  Serial.println(pqVals.PowerFactorValue);
+  lpp.addAnalogInput(9,powerVals.ApparentPowerValue);
   
-  Serial.print("Frequency:\t");        
-  Serial.print(pqVals.FrequencyValue);
-  Serial.println(" Hz");
-  
-  Serial.print("Temperature:\t");        
-  Serial.print(tempVal.TemperatureVal);
+  Serial.print("Temperature:\t");   
+  lpp.addTemperature(8, temp)     
   Serial.println(" degC");
 
   Serial.println("");
   Serial.println("");
- // Ajout des lectures aux vecteurs pour l'envoi
-  tensions.push_back(rmsVals.VoltageRMSValue/1000);
-  courants.push_back(rmsVals.CurrentRMSValue/1000);
-  puissances_actives.push_back(powerVals.ActivePowerValue/1000);
-  puissances_apparentes.push_back(powerVals.ApparentPowerValue/1000);
-  facteurs_puissance.push_back(pqVals.PowerFactorValue);
-  frequences.push_back(pqVals.FrequencyValue);
-  energies.push_back(powerVals.ActiveEnergyValue/1000);
 
-  if (tensions.size() >= nombreLecturesAvantEnvoi) {
-    // [Préparation et envoi des données]
-    DynamicJsonDocument doc(1024);
-    doc["deviceId"] = "0001";
-    doc["time_stamp"] = timeClient.getFormattedTime();
-    doc["tension"] = tensions;
-    doc["courant"] = courants;
-    doc["puissance_active"] = puissances_actives;
-    doc["puissance_apparente"] = puissances_apparentes;
-    doc["power_factor"] = facteurs_puissance;
-    doc["frequence"] = frequences;
-    doc["energie"] = energies;
-
-    serializeJson(doc, buffer);
-    client.publish("montopic", buffer);
-
-    // Vider les vecteurs après l'envoi
-    tensions.clear();
-    courants.clear();
-    puissances_actives.clear();
-    puissances_apparentes.clear();
-    facteurs_puissance.clear();
-    frequences.clear();
-    energies.clear();
-  }
 }
 
-void reconnectWiFi() {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Connexion WiFi perdue. Tentative de reconnexion...");
-    WiFi.begin(ssid, password);
-    while (WiFi.status() != WL_CONNECTED) {
-      delay(500);
-      Serial.print(".");
-    }
-    Serial.println("\nWiFi reconnecté");
-  }
-}
 
-void callback(char *topic, byte *payload, unsigned int length) {
-  Serial.print("Message arrived in topic: ");
-  Serial.println(topic);
-  Serial.print("Message:");
-  for (int i = 0; i < length; i++) {
-    Serial.print((char) payload[i]);
- }
- Serial.println();
- Serial.println("-----------------------");
-}
 
-void mqttReconnect() {
-  while (!client.connected()) {
-    Serial.println("Tentative de connexion au broker MQTT...");
-    if (client.connect("esp32-client")) {
-      Serial.println("Connecté au broker MQTT");
-      client.subscribe(topic);
-    } else {
-      Serial.print("Echec de la connexion, rc=");
-      Serial.print(client.state());
-      Serial.println(" nouvelle tentative dans 5 secondes");
-      delay(5000);
-    }
-  }
-}
 void resetADE9153A(void)
 {
  digitalWrite(ADE9153A_RESET_PIN, LOW);
@@ -273,4 +218,3 @@ void runLength(long seconds)
     delay(blinkInterval);
   }  
 }
-
